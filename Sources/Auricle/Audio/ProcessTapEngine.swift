@@ -99,8 +99,9 @@ final class ProcessTapEngine {
                 self.buildChain()
                 return
             }
-            if let target = self.resolveTarget(requestedUID: self.explicitRequestedUID),
-               target.uid != chain.targetUID {
+            let resolved = self.resolveTarget(requestedUID: self.explicitRequestedUID)
+            engineLog.debug("apply: requested \(targetDeviceUID ?? "nil", privacy: .public), resolved \(resolved?.uid ?? "FAIL", privacy: .public), chain \(chain.targetUID, privacy: .public)")
+            if let target = resolved, target.uid != chain.targetUID {
                 self.buildChain()
             } else {
                 self.pushParameters(config, into: chain)
@@ -115,6 +116,7 @@ final class ProcessTapEngine {
         controlQueue.async { [weak self] in
             guard let self else { return }
             guard objectIDs != self.tappedObjectIDs else { return }
+            engineLog.debug("updateSource: \(self.tappedObjectIDs.count) -> \(objectIDs.count) objects")
             self.tappedObjectIDs = objectIDs
             guard let chain = self.chain else { return }
             // Swap the process list on the live tap; keep the UUID so the aggregate's
@@ -262,6 +264,7 @@ final class ProcessTapEngine {
         buildGeneration.withLock { $0 += 1 }
         tearDownChain()
         guard let config = lastConfig else { return }
+        engineLog.debug("buildChain: requested \(self.explicitRequestedUID ?? "nil", privacy: .public)")
         guard let target = resolveTarget(requestedUID: explicitRequestedUID) else {
             reportFailure("no usable output device is available")
             return

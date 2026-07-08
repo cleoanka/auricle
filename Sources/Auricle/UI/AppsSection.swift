@@ -135,6 +135,9 @@ struct AppRow: View {
                     if errorMessage == nil, app.isPlaying, controller.isManaged(app) {
                         LevelMeter { controller.levels(for: app) ?? (left: 0, right: 0) }
                     }
+                    if let uid = cfg.outputDeviceUID {
+                        routingBadge(uid: uid)
+                    }
                 }
                 if let errorMessage {
                     Button {
@@ -207,6 +210,30 @@ struct AppRow: View {
                     .frame(width: 30, alignment: .trailing)
             }
         }
+    }
+
+    /// Small pin badge: this app is routed to a specific device and will NOT follow
+    /// the Output selection at the top. Warning tone while that device is unplugged.
+    private func routingBadge(uid: String) -> some View {
+        let device = controller.devices.device(forUID: uid)
+        return HStack(spacing: 3) {
+            Image(systemName: device == nil ? "exclamationmark.triangle" : "arrow.turn.down.right")
+                .font(.system(size: 8, weight: .semibold))
+            Text(device?.name ?? "unplugged")
+                .font(.system(size: 9.5, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .foregroundStyle(device == nil ? Color.warning : Color.textTertiary)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(Capsule(style: .continuous).fill(Color.eqWell))
+        .frame(maxWidth: 120, alignment: .leading)
+        .fixedSize()
+        .help(device == nil
+            ? "Routed device is unplugged — using System Default until it returns"
+            : "Pinned to \(device!.name) — doesn't follow the Output selection above")
+        .accessibilityLabel(device == nil ? "Routed device unplugged" : "Routed to \(device!.name)")
     }
 
     private var iconView: some View {

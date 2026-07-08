@@ -311,9 +311,13 @@ final class AudioController: ObservableObject {
     }
 
     private func defaultOutputChanged() {
+        engineLog.debug("controller: defaultOutputChanged")
+        // Re-apply every engine, routed ones included: the engine keeps a pinned device
+        // that still exists, while an engine in unplugged-fallback follows the new default
+        // immediately instead of staying on the old one until the next unrelated event.
         for (key, engine) in engines {
-            guard let config = appConfigs[key], config.outputDeviceUID == nil else { continue }
-            engine.apply(config: config, targetDeviceUID: nil)
+            guard let config = appConfigs[key] else { continue }
+            engine.apply(config: config, targetDeviceUID: config.outputDeviceUID)
         }
         if let masterEngine {
             masterEngine.apply(config: masterConfig, targetDeviceUID: nil)
@@ -321,6 +325,7 @@ final class AudioController: ObservableObject {
     }
 
     private func deviceListChanged() {
+        engineLog.debug("controller: deviceListChanged")
         // Routed engines re-resolve their UID: a vanished device falls back to the default
         // (routing is kept), a returning device is picked up again. Never surfaced as an error.
         for (key, engine) in engines {
