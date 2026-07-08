@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # build-app.sh — build, bundle, sign and zip Auricle (SwiftPM MenuBarExtra macOS app).
-# Usage: ./build-app.sh            (from the package root, next to Package.swift)
+# Usage: scripts/build-app.sh      (lives in scripts/, package root is its parent)
 # Overridable: APP_NAME, BUNDLE_ID, VERSION, UNIVERSAL=0 to force native-only build.
 set -euo pipefail
 
 APP_NAME="${APP_NAME:-Auricle}"
 BUNDLE_ID="${BUNDLE_ID:-io.github.cleoanka.Auricle}"
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 
@@ -49,7 +50,7 @@ cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
 sed -e "s/__APP_NAME__/$APP_NAME/g" \
     -e "s/__BUNDLE_ID__/$BUNDLE_ID/g" \
     -e "s/__VERSION__/$VERSION/g" \
-    "$ROOT/Info.plist" > "$APP/Contents/Info.plist"
+    "$SCRIPT_DIR/Info.plist.template" > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
 
 # Icon (optional).
