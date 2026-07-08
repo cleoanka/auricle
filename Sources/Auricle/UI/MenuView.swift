@@ -5,11 +5,18 @@ struct MenuView: View {
     @EnvironmentObject private var controller: AudioController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var popoverVisible = false
+    @State private var contentHeight: CGFloat = 0
+
+    /// 640pt popover cap minus the fixed footer strip (divider + 40pt bar).
+    private let maxScrollHeight: CGFloat = 599
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Everything above the footer scrolls, so an expanded drawer or a long app
             // list can never push the Input section or the footer out of the popover.
+            // Inside a MenuBarExtra window a ScrollView reports ~zero ideal height and
+            // the whole popover collapses, so the scroll region is sized explicitly
+            // from the measured content height (capped, then it actually scrolls).
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if controller.permissionIssue {
@@ -32,12 +39,19 @@ struct MenuView: View {
                     InputSection()
                 }
                 .padding(.bottom, 12)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: ScrollContentHeightKey.self,
+                                               value: proxy.size.height)
+                    }
+                )
             }
+            .frame(height: min(max(contentHeight, 180), maxScrollHeight))
+            .onPreferenceChange(ScrollContentHeightKey.self) { contentHeight = $0 }
             Divider()
             FooterBar()
         }
         .frame(width: 380)
-        .frame(maxHeight: 640)
         .environment(\.popoverVisible, popoverVisible)
         .animation(
             reduceMotion ? .linear(duration: 0.15) : .easeInOut(duration: 0.25),
@@ -45,6 +59,13 @@ struct MenuView: View {
         )
         .onAppear { popoverVisible = true }
         .onDisappear { popoverVisible = false }
+    }
+}
+
+private struct ScrollContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

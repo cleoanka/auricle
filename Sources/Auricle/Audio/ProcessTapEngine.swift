@@ -22,6 +22,29 @@ final class ProcessTapEngine {
         case systemWide
     }
 
+    /// Creates and immediately destroys a throwaway, unmuted tap. Blocking; call off-main.
+    /// This is what makes macOS show the System Audio Recording consent prompt (or reveals
+    /// a previous denial) without waiting for the user to touch a slider first.
+    static func permissionProbe() -> Bool {
+        let description: CATapDescription
+        let own = translatePIDToProcessObject(getpid())
+        if own.isValid {
+            description = CATapDescription(stereoMixdownOfProcesses: [own])
+        } else {
+            description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        }
+        description.name = "Auricle Permission Probe"
+        description.muteBehavior = .unmuted
+        description.isPrivate = true
+        var tapID = AudioObjectID.unknown
+        let status = AudioHardwareCreateProcessTap(description, &tapID)
+        if tapID.isValid {
+            AudioHardwareDestroyProcessTap(tapID)
+        }
+        engineLog.info("permission probe: status \(status, privacy: .public), tap \(tapID, privacy: .public)")
+        return status == noErr && tapID.isValid
+    }
+
     let source: Source
 
     /// Called on the main queue when the engine fails. Messages starting with "permission:"
@@ -193,6 +216,7 @@ final class ProcessTapEngine {
     }
 
     private func reportFailure(_ message: String) {
+        engineLog.error("engine failure: \(message, privacy: .public)")
         isRunning = false
         let generation = buildGeneration.withLock { $0 }
         guard let handler = onFailure else { return }
@@ -442,6 +466,7 @@ final class ProcessTapEngine {
                       rtState: rtState,
                       listeners: listeners)
         isRunning = true
+        engineLog.info("chain up: tap \(tapID, privacy: .public), aggregate \(aggregateID, privacy: .public), target \(target.uid, privacy: .public), sr \(sampleRate, privacy: .public)")
     }
 
     // MARK: - Chain state
@@ -653,6 +678,10 @@ final class ProcessTapEngine {
         }
     }
 }
+
+// MARK: - Diagnostics
+
+let engineLog = Logger(subsystem: AppInfo.bundleID, category: "engine")
 
 // MARK: - Raw property helpers (control plane only)
 

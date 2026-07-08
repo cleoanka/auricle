@@ -78,6 +78,7 @@ final class AudioController: ObservableObject {
         devices.start()
         processes.start()
         reconcileEngines()
+        runPermissionProbe()
     }
 
     deinit {
@@ -135,8 +136,23 @@ final class AudioController: ObservableObject {
     /// Explicit retry after the user granted System Audio Recording consent.
     func retryPermission() {
         guard permissionIssue else { return }
-        permissionIssue = false
-        reconcileEngines()
+        runPermissionProbe()
+    }
+
+    /// Triggers the System Audio Recording consent prompt at launch (first run) instead of
+    /// waiting for the first slider touch, and keeps `permissionIssue` truthful either way.
+    private func runPermissionProbe() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let granted = ProcessTapEngine.permissionProbe()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let hadIssue = self.permissionIssue
+                self.permissionIssue = !granted
+                if granted && hadIssue {
+                    self.reconcileEngines()
+                }
+            }
+        }
     }
 
     // MARK: Master chain
