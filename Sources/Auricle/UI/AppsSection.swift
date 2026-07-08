@@ -21,6 +21,11 @@ struct AppsSection: View {
                 .padding(.bottom, 6)
             content
         }
+        .onChange(of: controller.processes.apps) { _, apps in
+            // A quit app must not leave its drawer armed to reopen on relaunch.
+            guard let key = expandedKey, !apps.contains(where: { $0.configKey == key }) else { return }
+            expandedKey = nil
+        }
     }
 
     @ViewBuilder
@@ -31,12 +36,8 @@ struct AppsSection: View {
             if !controller.permissionIssue {
                 EmptyAppsState()
             }
-        } else if apps.count > 5 {
-            ScrollView {
-                appList(apps)
-            }
-            .frame(height: 5.5 * appRowHeight + 10)
         } else {
+            // The popover's outer ScrollView handles overflow; no inner scroll region.
             appList(apps)
         }
     }
@@ -219,6 +220,14 @@ struct AppRow: View {
                 Divider()
                 ForEach(controller.devices.outputDevices) { device in
                     routeItem(device.uid, title: device.name, symbol: device.symbolName)
+                }
+                if let uid = cfg.outputDeviceUID,
+                   !controller.devices.outputDevices.contains(where: { $0.uid == uid }) {
+                    Divider()
+                    Toggle(isOn: .constant(true)) {
+                        Label("Missing Device — using System Default", systemImage: "exclamationmark.triangle")
+                    }
+                    .disabled(true)
                 }
             }
             Menu("Boost") {

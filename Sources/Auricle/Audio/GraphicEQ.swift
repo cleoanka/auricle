@@ -1,5 +1,6 @@
 import Accelerate
 import Foundation
+import os
 
 final class GraphicEQ {
     static let bandCount = 10
@@ -17,6 +18,12 @@ final class GraphicEQ {
     private let scratch: UnsafeMutablePointer<Float>
     private let inputPointers: UnsafeMutablePointer<UnsafePointer<Float>>
     private let outputPointers: UnsafeMutablePointer<UnsafeMutablePointer<Float>>
+    // A vDSP_biquadm_Setup may not be touched from two threads at once, so new targets
+    // are staged here and applied by the render thread just before it processes.
+    private let targetCount: Int
+    private let stagedTargets: UnsafeMutablePointer<Double>
+    private let stagedLock: UnsafeMutablePointer<os_unfair_lock>
+    private var stagedPending = false
 
     init(sampleRate: Double, channelCount: Int) {
         let channels = max(1, channelCount)
@@ -33,6 +40,12 @@ final class GraphicEQ {
                                      vDSP_Length(GraphicEQ.bandCount),
                                      vDSP_Length(channels))
         }
+
+        targetCount = 5 * GraphicEQ.bandCount * channels
+        stagedTargets = .allocate(capacity: targetCount)
+        stagedTargets.initialize(repeating: 0, count: targetCount)
+        stagedLock = .allocate(capacity: 1)
+        stagedLock.initialize(to: os_unfair_lock())
 
         let scratchCount = GraphicEQ.chunkCapacity * channels
         scratch = .allocate(capacity: scratchCount)
@@ -53,31 +66,49 @@ final class GraphicEQ {
         inputPointers.deallocate()
         outputPointers.deallocate()
         scratch.deallocate()
+        stagedTargets.deallocate()
+        stagedLock.deallocate()
     }
 
-    /// Recompute coefficients and ramp toward them. Safe to call from any (non-RT) thread.
+    /// Recompute coefficients and stage them; the render thread picks them up and ramps.
+    /// Safe to call from any non-RT thread while processing runs.
     func setParameters(gainsDB: [Float], preampDB: Float) {
-        guard let setup else { return }
+        guard setup != nil else { return }
         let targets = GraphicEQ.coefficients(gainsDB: gainsDB,
                                              preampDB: preampDB,
                                              sampleRate: sampleRate,
                                              channelCount: channelCount)
         targets.withUnsafeBufferPointer { buffer in
+            os_unfair_lock_lock(stagedLock)
+            stagedTargets.update(from: buffer.baseAddress!, count: targetCount)
+            stagedPending = true
+            os_unfair_lock_unlock(stagedLock)
+        }
+    }
+
+    /// RT-side pickup: mutate the setup only on the thread that also runs vDSP_biquadm.
+    /// On lock contention the staged targets are simply applied on a later callback.
+    private func applyStagedTargets(_ setup: vDSP_biquadm_Setup) {
+        guard os_unfair_lock_trylock(stagedLock) else { return }
+        if stagedPending {
             vDSP_biquadm_SetTargetsDouble(setup,
-                                          buffer.baseAddress!,
+                                          stagedTargets,
                                           0.995,
                                           0.0001,
                                           0,
                                           0,
                                           vDSP_Length(GraphicEQ.bandCount),
                                           vDSP_Length(channelCount))
+            stagedPending = false
         }
+        os_unfair_lock_unlock(stagedLock)
     }
 
     /// In-place processing of `frameCount` frames. `channels` holds one pointer per channel;
     /// samples for channel c are at channels[c][i * stride]. RT-safe.
     func process(channels: [UnsafeMutablePointer<Float>], stride: Int, frameCount: Int) {
         guard let setup, stride > 0, frameCount > 0, channels.count >= channelCount else { return }
+        applyStagedTargets(setup)
         var offset = 0
         while offset < frameCount {
             let count = min(GraphicEQ.chunkCapacity, frameCount - offset)

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CoreAudio
 import Foundation
 
@@ -28,6 +29,8 @@ final class AudioController: ObservableObject {
     /// Last object-ID set handed to each engine, to detect helper processes coming/going.
     private var engineObjectIDs: [String: [AudioObjectID]] = [:]
     private var terminateObserver: NSObjectProtocol?
+    private var cancellables: Set<AnyCancellable> = []
+    private var serviceRestartToken: ListenerToken?
 
     /// engineErrors key for the master chain — deliberately not a plausible configKey.
     private static let masterErrorKey = "__auricle.master__"
@@ -50,6 +53,19 @@ final class AudioController: ObservableObject {
             self?.reconcileEngines()
         }
         processes.keepAliveKeys = Set(appConfigs.keys)
+
+        // Views observe only this controller; forward the nested objects' invalidations
+        // so the app list, device lists, and volumes stay live while the popover is open.
+        devices.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        processes.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        serviceRestartToken = AudioObjectID.system.watch(kAudioHardwarePropertyServiceRestarted) { [weak self] in
+            MainActor.assumeIsolated { self?.serviceRestarted() }
+        }
 
         terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -78,8 +94,9 @@ final class AudioController: ObservableObject {
 
     func setConfig(_ config: AppAudioConfig, for app: AudioApp) {
         let key = app.configKey
-        // Any config change is a fresh attempt: clear stale failure state.
-        permissionIssue = false
+        // A config change is a fresh attempt for this app's engine. The global permission
+        // flag is only cleared by an explicit retry, so slider drags while consent is
+        // missing cannot spawn build/fail cycles or flicker the banner.
         engineErrors.removeValue(forKey: key)
 
         if config == AppAudioConfig() {
@@ -96,33 +113,43 @@ final class AudioController: ObservableObject {
                     engine.updateSource(objectIDs: app.objectIDs)
                 }
                 engine.apply(config: config, targetDeviceUID: config.outputDeviceUID)
-            } else {
+            } else if !permissionIssue {
                 startEngine(for: app, config: config)
             }
         } else {
             removeEngine(forKey: key)
         }
+        updateMasterExclusions()
         persist()
     }
 
     func resetConfig(for app: AudioApp) {
         appConfigs.removeValue(forKey: app.configKey)
         engineErrors.removeValue(forKey: app.configKey)
-        permissionIssue = false
         removeEngine(forKey: app.configKey)
         processes.keepAliveKeys = Set(appConfigs.keys)
+        updateMasterExclusions()
         persist()
+    }
+
+    /// Explicit retry after the user granted System Audio Recording consent.
+    func retryPermission() {
+        guard permissionIssue else { return }
+        permissionIssue = false
+        reconcileEngines()
     }
 
     // MARK: Master chain
 
     func setMasterConfig(_ config: AppAudioConfig) {
         masterConfig = config
-        permissionIssue = false
         engineErrors.removeValue(forKey: Self.masterErrorKey)
         reconcileMasterEngine()
         persist()
     }
+
+    /// Master-chain engine failure, if any (non-permission).
+    var masterEngineError: String? { engineErrors[Self.masterErrorKey] }
 
     // MARK: Presets
 
@@ -184,6 +211,7 @@ final class AudioController: ObservableObject {
             }
         }
 
+        updateMasterExclusions()
         reconcileMasterEngine()
     }
 
@@ -193,6 +221,7 @@ final class AudioController: ObservableObject {
                 guard !permissionIssue, engineErrors[Self.masterErrorKey] == nil else { return }
                 let engine = ProcessTapEngine(source: .systemWide)
                 attachFailureHandler(engine, key: Self.masterErrorKey)
+                engine.updateSource(objectIDs: perAppTappedObjectIDs())
                 masterEngine = engine
             }
             // Master always follows the system default output device.
@@ -201,6 +230,24 @@ final class AudioController: ObservableObject {
             engine.stop()
             masterEngine = nil
         }
+    }
+
+    /// Processes owned by per-app engines must be excluded from the master tap, or their
+    /// audio would be captured (and replayed) twice: .mutedWhenTapped only silences the
+    /// device mix, not what other taps hear.
+    private func perAppTappedObjectIDs() -> [AudioObjectID] {
+        var seen = Set<AudioObjectID>()
+        var ids: [AudioObjectID] = []
+        for list in engineObjectIDs.values {
+            for id in list where seen.insert(id).inserted {
+                ids.append(id)
+            }
+        }
+        return ids.sorted()
+    }
+
+    private func updateMasterExclusions() {
+        masterEngine?.updateSource(objectIDs: perAppTappedObjectIDs())
     }
 
     private func startEngine(for app: AudioApp, config: AppAudioConfig) {
@@ -221,12 +268,17 @@ final class AudioController: ObservableObject {
 
     private func attachFailureHandler(_ engine: ProcessTapEngine, key: String) {
         // Engines invoke onFailure on the main queue.
-        engine.onFailure = { [weak self] message in
-            self?.handleEngineFailure(key: key, message: message)
+        engine.onFailure = { [weak self, weak engine] message in
+            guard let self, let engine else { return }
+            self.handleEngineFailure(key: key, engine: engine, message: message)
         }
     }
 
-    private func handleEngineFailure(key: String, message: String) {
+    private func handleEngineFailure(key: String, engine: ProcessTapEngine, message: String) {
+        // A stale delivery (the engine at this key was already replaced or removed)
+        // must not tear down the live engine or pin a spurious error.
+        let current = key == Self.masterErrorKey ? masterEngine : engines[key]
+        guard current === engine else { return }
         if message.hasPrefix("permission:") {
             permissionIssue = true
         } else {
@@ -238,6 +290,7 @@ final class AudioController: ObservableObject {
             masterEngine = nil
         } else {
             removeEngine(forKey: key)
+            updateMasterExclusions()
         }
     }
 
@@ -258,6 +311,18 @@ final class AudioController: ObservableObject {
             guard let config = appConfigs[key], let uid = config.outputDeviceUID else { continue }
             engine.apply(config: config, targetDeviceUID: uid)
         }
+    }
+
+    private func serviceRestarted() {
+        // coreaudiod restarted: every HAL object ID (devices, taps, aggregates, per-chain
+        // listeners) is dead while device UIDs stay the same, so apply() alone would never
+        // rebuild. Refresh the world and force-rebuild every live engine.
+        devices.serviceRestarted()
+        processes.refresh()
+        for engine in engines.values {
+            engine.handleServiceRestart()
+        }
+        masterEngine?.handleServiceRestart()
     }
 
     private func persist() {

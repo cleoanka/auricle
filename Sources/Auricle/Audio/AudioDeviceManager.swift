@@ -2,6 +2,26 @@ import CoreAudio
 import Foundation
 import os
 
+/// Which side of a (possibly duplex) device a volume/mute control belongs to. AirPods and
+/// USB interfaces are one device with independent controls per scope, so every control API
+/// and cache is keyed by (device, scope) — never by device alone.
+enum DeviceControlScope: Hashable {
+    case output
+    case input
+
+    var propertyScope: AudioObjectPropertyScope {
+        switch self {
+        case .output: return kAudioDevicePropertyScopeOutput
+        case .input: return kAudioDevicePropertyScopeInput
+        }
+    }
+}
+
+struct DeviceControlKey: Hashable {
+    let id: AudioObjectID
+    let scope: DeviceControlScope
+}
+
 @MainActor
 final class AudioDeviceManager: ObservableObject {
     /// UID prefix for Auricle-private aggregate devices, so they can be filtered out of device lists.
@@ -11,9 +31,9 @@ final class AudioDeviceManager: ObservableObject {
     @Published private(set) var inputDevices: [AudioDevice] = []
     @Published private(set) var defaultOutputID: AudioObjectID = .unknown
     @Published private(set) var defaultInputID: AudioObjectID = .unknown
-    /// Volume scalar (0...1) per device, kept fresh via listeners.
-    @Published private(set) var volumes: [AudioObjectID: Float] = [:]
-    @Published private(set) var mutes: Set<AudioObjectID> = []
+    /// Volume scalar (0...1) per device control, kept fresh via listeners.
+    @Published private(set) var volumes: [DeviceControlKey: Float] = [:]
+    @Published private(set) var mutes: Set<DeviceControlKey> = []
 
     /// Hooks for AudioController (set before start()).
     var onDefaultOutputChanged: (() -> Void)?
@@ -68,31 +88,32 @@ final class AudioDeviceManager: ObservableObject {
         }
     }
 
-    func setVolume(_ volume: Float, for device: AudioDevice) {
+    func setVolume(_ volume: Float, for device: AudioDevice, scope: DeviceControlScope) {
         let clamped = min(max(volume, 0), 1)
-        let scope = Self.primaryScope(of: device)
+        let propertyScope = scope.propertyScope
         var wrote = false
-        for element in device.id.controlElements(for: kAudioDevicePropertyVolumeScalar, scope: scope)
-        where device.id.isPropertySettable(kAudioDevicePropertyVolumeScalar, scope: scope, element: element) {
+        for element in device.id.controlElements(for: kAudioDevicePropertyVolumeScalar, scope: propertyScope)
+        where device.id.isPropertySettable(kAudioDevicePropertyVolumeScalar, scope: propertyScope, element: element) {
             do {
-                try device.id.write(kAudioDevicePropertyVolumeScalar, scope: scope, element: element, value: clamped)
+                try device.id.write(kAudioDevicePropertyVolumeScalar, scope: propertyScope,
+                                    element: element, value: clamped)
                 wrote = true
             } catch {
                 log.error("setVolume(\(device.name, privacy: .public)): \(error.localizedDescription, privacy: .public)")
             }
         }
         if wrote {
-            volumes[device.id] = clamped
+            volumes[DeviceControlKey(id: device.id, scope: scope)] = clamped
         }
     }
 
-    func setMuted(_ muted: Bool, for device: AudioDevice) {
-        let scope = Self.primaryScope(of: device)
+    func setMuted(_ muted: Bool, for device: AudioDevice, scope: DeviceControlScope) {
+        let propertyScope = scope.propertyScope
         var wrote = false
-        for element in device.id.controlElements(for: kAudioDevicePropertyMute, scope: scope)
-        where device.id.isPropertySettable(kAudioDevicePropertyMute, scope: scope, element: element) {
+        for element in device.id.controlElements(for: kAudioDevicePropertyMute, scope: propertyScope)
+        where device.id.isPropertySettable(kAudioDevicePropertyMute, scope: propertyScope, element: element) {
             do {
-                try device.id.write(kAudioDevicePropertyMute, scope: scope, element: element,
+                try device.id.write(kAudioDevicePropertyMute, scope: propertyScope, element: element,
                                     value: UInt32(muted ? 1 : 0))
                 wrote = true
             } catch {
@@ -100,12 +121,18 @@ final class AudioDeviceManager: ObservableObject {
             }
         }
         if wrote {
-            if muted { mutes.insert(device.id) } else { mutes.remove(device.id) }
+            let key = DeviceControlKey(id: device.id, scope: scope)
+            if muted { mutes.insert(key) } else { mutes.remove(key) }
         }
     }
 
-    func volume(for id: AudioObjectID) -> Float { volumes[id] ?? 0 }
-    func isMuted(_ id: AudioObjectID) -> Bool { mutes.contains(id) }
+    func volume(for id: AudioObjectID, scope: DeviceControlScope) -> Float {
+        volumes[DeviceControlKey(id: id, scope: scope)] ?? 0
+    }
+
+    func isMuted(_ id: AudioObjectID, scope: DeviceControlScope) -> Bool {
+        mutes.contains(DeviceControlKey(id: id, scope: scope))
+    }
 
     func device(forUID uid: String) -> AudioDevice? {
         outputDevices.first { $0.uid == uid } ?? inputDevices.first { $0.uid == uid }
@@ -144,16 +171,24 @@ final class AudioDeviceManager: ObservableObject {
         }
     }
 
+    /// coreaudiod restarted: device object IDs changed wholesale; re-read everything.
+    func serviceRestarted() {
+        refreshDeviceList()
+        refreshDefaults(notify: true)
+    }
+
     private func refreshVolumesAndMutes() {
-        var newVolumes: [AudioObjectID: Float] = [:]
-        var newMutes: Set<AudioObjectID> = []
+        var newVolumes: [DeviceControlKey: Float] = [:]
+        var newMutes: Set<DeviceControlKey> = []
         for device in allDevices {
-            let scope = Self.primaryScope(of: device)
-            if let volume = device.id.volumeScalar(scope: scope) {
-                newVolumes[device.id] = volume
-            }
-            if device.id.muteState(scope: scope) == true {
-                newMutes.insert(device.id)
+            for scope in Self.controlScopes(of: device) {
+                let key = DeviceControlKey(id: device.id, scope: scope)
+                if let volume = device.id.volumeScalar(scope: scope.propertyScope) {
+                    newVolumes[key] = volume
+                }
+                if device.id.muteState(scope: scope.propertyScope) == true {
+                    newMutes.insert(key)
+                }
             }
         }
         volumes = newVolumes
@@ -162,16 +197,18 @@ final class AudioDeviceManager: ObservableObject {
 
     private func refreshControls(for id: AudioObjectID) {
         guard let device = allDevices.first(where: { $0.id == id }) else { return }
-        let scope = Self.primaryScope(of: device)
-        if let volume = id.volumeScalar(scope: scope) {
-            volumes[id] = volume
-        } else {
-            volumes.removeValue(forKey: id)
-        }
-        if id.muteState(scope: scope) == true {
-            mutes.insert(id)
-        } else {
-            mutes.remove(id)
+        for scope in Self.controlScopes(of: device) {
+            let key = DeviceControlKey(id: id, scope: scope)
+            if let volume = id.volumeScalar(scope: scope.propertyScope) {
+                volumes[key] = volume
+            } else {
+                volumes.removeValue(forKey: key)
+            }
+            if id.muteState(scope: scope.propertyScope) == true {
+                mutes.insert(key)
+            } else {
+                mutes.remove(key)
+            }
         }
     }
 
@@ -181,14 +218,15 @@ final class AudioDeviceManager: ObservableObject {
         let selectors: [AudioObjectPropertySelector] = [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute]
         for device in allDevices {
             let id = device.id
-            let scope = Self.primaryScope(of: device)
-            for selector in selectors {
-                for element in id.controlElements(for: selector, scope: scope) {
-                    deviceTokens.append(id.watch(selector, scope: scope, element: element) { [weak self] in
-                        MainActor.assumeIsolated {
-                            self?.refreshControls(for: id)
-                        }
-                    })
+            for scope in Self.controlScopes(of: device) {
+                for selector in selectors {
+                    for element in id.controlElements(for: selector, scope: scope.propertyScope) {
+                        deviceTokens.append(id.watch(selector, scope: scope.propertyScope, element: element) { [weak self] in
+                            MainActor.assumeIsolated {
+                                self?.refreshControls(for: id)
+                            }
+                        })
+                    }
                 }
             }
         }
@@ -196,9 +234,11 @@ final class AudioDeviceManager: ObservableObject {
 
     // MARK: - Classification
 
-    /// Volume/mute live on the output scope for anything that can play, input scope otherwise.
-    private nonisolated static func primaryScope(of device: AudioDevice) -> AudioObjectPropertyScope {
-        device.hasOutput ? kAudioDevicePropertyScopeOutput : kAudioDevicePropertyScopeInput
+    private nonisolated static func controlScopes(of device: AudioDevice) -> [DeviceControlScope] {
+        var scopes: [DeviceControlScope] = []
+        if device.hasOutput { scopes.append(.output) }
+        if device.hasInput { scopes.append(.input) }
+        return scopes
     }
 
     private nonisolated static func describeDevice(_ id: AudioObjectID) -> AudioDevice? {

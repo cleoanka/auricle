@@ -9,7 +9,10 @@ import os
 //
 // systemWide feedback avoidance: the global tap always excludes Auricle's own process object;
 // when that object cannot be resolved yet, the aggregate + IOProc start first (silence) and
-// the tap is attached post-hoc via kAudioAggregateDevicePropertyTapList.
+// the tap is attached post-hoc via kAudioAggregateDevicePropertyTapList. The global tap also
+// excludes every process currently captured by a per-app engine (fed in via updateSource),
+// because .mutedWhenTapped only silences the device mix — other taps still hear the process,
+// and without the exclusion those apps would be replayed twice.
 
 final class ProcessTapEngine {
     enum Source {
@@ -33,6 +36,8 @@ final class ProcessTapEngine {
     private var lastConfig: AppAudioConfig?
     private var lastRequestedUID: String?
     private var chain: Chain?
+    /// Bumped at the start of every buildChain so stale failure deliveries can be dropped.
+    private let buildGeneration = OSAllocatedUnfairLock(initialState: 0)
 
     init(source: Source) {
         self.source = source
@@ -48,8 +53,15 @@ final class ProcessTapEngine {
     }
 
     deinit {
-        controlQueue.sync { tearDownChain() }
-        levels.deallocate()
+        // deinit can run on controlQueue itself (a queued block holding the last strong
+        // reference), so a sync here would self-deadlock. Move the chain out and destroy
+        // it without capturing self; levels must outlive any in-flight render.
+        let chain = chain
+        let levels = levels
+        controlQueue.async {
+            if let chain { ProcessTapEngine.destroy(chain: chain) }
+            levels.deallocate()
+        }
     }
 
     /// Start / reconfigure / retarget as needed. Diffs internally:
@@ -73,15 +85,29 @@ final class ProcessTapEngine {
         }
     }
 
-    /// Update the set of tapped process objects (app gained/lost helper processes).
+    /// App engines: update the set of tapped process objects (app gained/lost helpers).
+    /// Master engine: update the set of process objects excluded from the global tap
+    /// (apps owned by per-app engines, so their audio is not captured twice).
     func updateSource(objectIDs: [AudioObjectID]) {
         controlQueue.async { [weak self] in
             guard let self else { return }
+            guard objectIDs != self.tappedObjectIDs else { return }
             self.tappedObjectIDs = objectIDs
-            guard case .app = self.source, let chain = self.chain else { return }
+            guard let chain = self.chain else { return }
             // Swap the process list on the live tap; keep the UUID so the aggregate's
             // tap-list reference stays valid. Any failure falls back to a full rebuild.
-            let description = self.makeAppTapDescription(objectIDs: objectIDs)
+            let description: CATapDescription
+            switch self.source {
+            case .app:
+                description = self.makeAppTapDescription(objectIDs: objectIDs)
+            case .systemWide:
+                let own = translatePIDToProcessObject(getpid())
+                guard own.isValid else {
+                    self.buildChain()
+                    return
+                }
+                description = self.makeSystemTapDescription(excluding: self.systemExclusions(own: own))
+            }
             description.uuid = chain.tapUUID
             var address = AudioObjectPropertyAddress(kAudioTapPropertyDescription)
             var value = description
@@ -97,8 +123,20 @@ final class ProcessTapEngine {
     }
 
     func stop() {
+        // Strong capture on purpose: the engine stays alive until teardown completes,
+        // so releasing the last external reference right after stop() is always safe.
+        controlQueue.async { self.tearDownChain() }
+    }
+
+    /// coreaudiod restarted: every HAL object ID in the chain is dead. Drop them without
+    /// destroying (the IDs no longer refer to our objects) and rebuild from the last config.
+    func handleServiceRestart() {
         controlQueue.async { [weak self] in
-            self?.tearDownChain()
+            guard let self, self.chain != nil else { return }
+            self.chain = nil
+            self.isRunning = false
+            self.levels.update(repeating: 0, count: 2)
+            self.buildChain()
         }
     }
 
@@ -136,24 +174,55 @@ final class ProcessTapEngine {
         return description
     }
 
-    private func makeSystemTapDescription(excluding processObject: AudioObjectID) -> CATapDescription {
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [processObject])
+    private func makeSystemTapDescription(excluding processObjects: [AudioObjectID]) -> CATapDescription {
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: processObjects)
         description.name = "Auricle Master Tap"
         description.muteBehavior = .mutedWhenTapped
         description.isPrivate = true
         return description
     }
 
+    /// Own process first, then the per-app-tapped objects; invalid and duplicate IDs dropped.
+    private func systemExclusions(own: AudioObjectID) -> [AudioObjectID] {
+        var seen = Set<AudioObjectID>()
+        var list: [AudioObjectID] = []
+        for id in [own] + tappedObjectIDs where id.isValid && seen.insert(id).inserted {
+            list.append(id)
+        }
+        return list
+    }
+
     private func reportFailure(_ message: String) {
         isRunning = false
+        let generation = buildGeneration.withLock { $0 }
         guard let handler = onFailure else { return }
-        DispatchQueue.main.async { handler(message) }
+        DispatchQueue.main.async { [weak self] in
+            // Drop failures from superseded builds: a newer build may already have recovered.
+            guard let self, self.buildGeneration.withLock({ $0 }) == generation else { return }
+            handler(message)
+        }
+    }
+
+    /// Only a permission-shaped OSStatus earns the "permission:" prefix; anything else
+    /// (e.g. the tapped process quit mid-build) stays a per-engine error.
+    private static func tapFailureMessage(_ status: OSStatus, what: String) -> String {
+        let permissionStatuses: [OSStatus] = [
+            OSStatus(kAudioHardwareIllegalOperationError),
+            OSStatus(kAudioDevicePermissionsError),
+        ]
+        let text = "could not create the \(what) (OSStatus \(status))"
+        return permissionStatuses.contains(status) ? "permission: \(text)" : text
     }
 
     private func tearDownChain() {
         isRunning = false
         guard let chain else { return }
         self.chain = nil
+        Self.destroy(chain: chain)
+        levels.update(repeating: 0, count: 2)
+    }
+
+    private static func destroy(chain: Chain) {
         for listener in chain.listeners {
             listener.remove()
         }
@@ -163,10 +232,10 @@ final class ProcessTapEngine {
         }
         AudioHardwareDestroyAggregateDevice(chain.aggregateID)
         AudioHardwareDestroyProcessTap(chain.tapID)
-        levels.update(repeating: 0, count: 2)
     }
 
     private func buildChain() {
+        buildGeneration.withLock { $0 += 1 }
         tearDownChain()
         guard let config = lastConfig else { return }
         guard let target = resolveTarget(requestedUID: explicitRequestedUID) else {
@@ -198,17 +267,17 @@ final class ProcessTapEngine {
             let description = makeAppTapDescription(objectIDs: tappedObjectIDs)
             let status = AudioHardwareCreateProcessTap(description, &tapID)
             guard status == noErr, tapID.isValid else {
-                reportFailure("permission: could not create the process tap (OSStatus \(status))")
+                reportFailure(Self.tapFailureMessage(status, what: "process tap"))
                 return
             }
             tapUUID = description.uuid
         case .systemWide:
             let own = translatePIDToProcessObject(getpid())
             if own.isValid {
-                let description = makeSystemTapDescription(excluding: own)
+                let description = makeSystemTapDescription(excluding: systemExclusions(own: own))
                 let status = AudioHardwareCreateProcessTap(description, &tapID)
                 guard status == noErr, tapID.isValid else {
-                    reportFailure("permission: could not create the system tap (OSStatus \(status))")
+                    reportFailure(Self.tapFailureMessage(status, what: "system tap"))
                     return
                 }
                 tapUUID = description.uuid
@@ -307,11 +376,11 @@ final class ProcessTapEngine {
                 reportFailure("could not resolve Auricle's own audio process for the master tap")
                 return
             }
-            let description = makeSystemTapDescription(excluding: own)
+            let description = makeSystemTapDescription(excluding: systemExclusions(own: own))
             let status = AudioHardwareCreateProcessTap(description, &tapID)
             guard status == noErr, tapID.isValid else {
                 unwind()
-                reportFailure("permission: could not create the system tap (OSStatus \(status))")
+                reportFailure(Self.tapFailureMessage(status, what: "system tap"))
                 return
             }
             tapUUID = description.uuid

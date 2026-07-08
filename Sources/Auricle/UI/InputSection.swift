@@ -19,8 +19,8 @@ private struct InputRow: View {
     var body: some View {
         let devices = controller.devices
         let device = devices.defaultInput
-        let muted = device.map { devices.isMuted($0.id) } ?? false
-        let volume = device.map { devices.volume(for: $0.id) } ?? 0
+        let muted = device.map { devices.isMuted($0.id, scope: .input) } ?? false
+        let volume = device.map { devices.volume(for: $0.id, scope: .input) } ?? 0
 
         HStack(spacing: 8) {
             Image(systemName: "mic")
@@ -67,7 +67,7 @@ private struct InputRow: View {
                 Slider(
                     value: Binding(
                         get: { Double(volume) },
-                        set: { if let device { devices.setVolume(Float($0), for: device) } }
+                        set: { if let device { devices.setVolume(Float($0), for: device, scope: .input) } }
                     ),
                     in: 0...1
                 )
@@ -92,7 +92,7 @@ private struct InputRow: View {
                     diameter: 22,
                     iconSize: 12
                 ) {
-                    if let device { devices.setMuted(!muted, for: device) }
+                    if let device { devices.setMuted(!muted, for: device, scope: .input) }
                 }
                 .accessibilityLabel(muted ? "Unmute microphone" : "Mute microphone")
             }

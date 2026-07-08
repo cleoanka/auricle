@@ -8,26 +8,32 @@ struct MenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if controller.permissionIssue {
-                PermissionBanner()
-                    .padding(.horizontal, 12)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
-                    .transition(reduceMotion
-                        ? .opacity
-                        : .opacity.combined(with: .move(edge: .top)))
+            // Everything above the footer scrolls, so an expanded drawer or a long app
+            // list can never push the Input section or the footer out of the popover.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if controller.permissionIssue {
+                        PermissionBanner()
+                            .padding(.horizontal, 12)
+                            .padding(.top, 12)
+                            .padding(.bottom, 4)
+                            .transition(reduceMotion
+                                ? .opacity
+                                : .opacity.combined(with: .move(edge: .top)))
+                    }
+                    OutputSection()
+                    Divider()
+                        .padding(.horizontal, 12)
+                        .padding(.top, 10)
+                    AppsSection()
+                    Divider()
+                        .padding(.horizontal, 12)
+                        .padding(.top, 10)
+                    InputSection()
+                }
+                .padding(.bottom, 12)
             }
-            OutputSection()
             Divider()
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-            AppsSection()
-            Divider()
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-            InputSection()
-            Divider()
-                .padding(.top, 12)
             FooterBar()
         }
         .frame(width: 380)
@@ -64,8 +70,13 @@ struct PermissionBanner: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Button("Open Privacy Settings…") {
-                    controller.openPrivacySettings()
+                HStack(spacing: 12) {
+                    Button("Open Privacy Settings…") {
+                        controller.openPrivacySettings()
+                    }
+                    Button("Try Again") {
+                        controller.retryPermission()
+                    }
                 }
                 .buttonStyle(.link)
                 .font(.system(size: 12))

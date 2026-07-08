@@ -28,8 +28,12 @@ struct OutputSection: View {
             MasterChainDisclosureRow(expanded: $chainExpanded)
             VStack(spacing: 0) {
                 if chainExpanded {
-                    MasterChainDrawer(config: masterConfig)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    MasterChainDrawer(
+                        config: masterConfig,
+                        errorMessage: controller.masterEngineError,
+                        onRetry: { controller.setMasterConfig(controller.masterConfig) }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
             .clipped()
@@ -98,12 +102,12 @@ private struct MasterVolumeRow: View {
     var body: some View {
         let devices = controller.devices
         let device = devices.defaultOutput
-        let muted = device.map { devices.isMuted($0.id) } ?? false
-        let volume = device.map { devices.volume(for: $0.id) } ?? 0
+        let muted = device.map { devices.isMuted($0.id, scope: .output) } ?? false
+        let volume = device.map { devices.volume(for: $0.id, scope: .output) } ?? 0
 
         HStack(spacing: 10) {
             MuteButton(isMuted: muted, level: volume, diameter: 28, iconSize: 15) {
-                if let device { devices.setMuted(!muted, for: device) }
+                if let device { devices.setMuted(!muted, for: device, scope: .output) }
             }
             .disabled(device == nil)
             .accessibilityLabel(muted ? "Unmute output" : "Mute output")
@@ -111,7 +115,7 @@ private struct MasterVolumeRow: View {
             Slider(
                 value: Binding(
                     get: { Double(volume) },
-                    set: { if let device { devices.setVolume(Float($0), for: device) } }
+                    set: { if let device { devices.setVolume(Float($0), for: device, scope: .output) } }
                 ),
                 in: 0...1
             )
@@ -138,9 +142,9 @@ private struct MasterVolumeRow: View {
         .onScrollWheel(enabled: device != nil && !muted) { ticks, modifiers in
             guard let device = controller.devices.defaultOutput else { return }
             let step: Float = modifiers.contains(.shift) ? 0.06 : (modifiers.contains(.option) ? 0.01 : 0.02)
-            let current = controller.devices.volume(for: device.id)
+            let current = controller.devices.volume(for: device.id, scope: .output)
             let next = min(max(current + Float(ticks) * step, 0), 1)
-            controller.devices.setVolume(next, for: device)
+            controller.devices.setVolume(next, for: device, scope: .output)
             bumpReadoutEmphasis()
         }
     }
@@ -201,9 +205,29 @@ private struct MasterChainDisclosureRow: View {
 
 private struct MasterChainDrawer: View {
     @Binding var config: AppAudioConfig
+    var errorMessage: String?
+    var onRetry: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
+            if let errorMessage {
+                Button(action: onRetry) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.warning)
+                        Text("Audio engine couldn't attach — click to retry")
+                            .font(.rowSubtitle)
+                            .foregroundStyle(Color.warning)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(errorMessage)
+                .padding(.bottom, 8)
+            }
             BoostRow(boostDB: $config.boostDB)
             Divider()
                 .opacity(0.5)
