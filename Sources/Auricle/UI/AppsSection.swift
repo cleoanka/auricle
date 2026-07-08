@@ -130,6 +130,8 @@ struct AppRow: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .help(app.name)
+                        .contentShape(Rectangle())
+                        .onTapGesture { toggleDrawer() }
                     if errorMessage == nil, app.isPlaying, controller.isManaged(app) {
                         LevelMeter { controller.levels(for: app) ?? (left: 0, right: 0) }
                     }
@@ -155,10 +157,31 @@ struct AppRow: View {
                 controller.setConfig(updated, for: app)
             }
             .accessibilityLabel(cfg.isMuted ? "Unmute \(app.name)" : "Mute \(app.name)")
-            overflowMenu(cfg)
+            disclosureChevron
         }
         .padding(.horizontal, 8)
         .frame(height: appRowHeight)
+    }
+
+    private var disclosureChevron: some View {
+        Button {
+            toggleDrawer()
+        } label: {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isExpanded ? .primary : .secondary)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isExpanded ? "Hide options for \(app.name)" : "Show options for \(app.name)")
+    }
+
+    private func toggleDrawer() {
+        withAnimation(expandAnimation) {
+            expandedKey = isExpanded ? nil : app.configKey
+        }
     }
 
     private func sliderRow(_ cfg: AppAudioConfig) -> some View {
@@ -208,118 +231,101 @@ struct AppRow: View {
                     .offset(x: 4, y: 3)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { toggleDrawer() }
         .accessibilityHidden(true)
     }
 
-    // MARK: Overflow menu
-
-    private func overflowMenu(_ cfg: AppAudioConfig) -> some View {
-        Menu {
-            Menu("Output") {
-                routeItem(nil, title: "System Default")
-                Divider()
-                ForEach(controller.devices.outputDevices) { device in
-                    routeItem(device.uid, title: device.name, symbol: device.symbolName)
-                }
-                if let uid = cfg.outputDeviceUID,
-                   !controller.devices.outputDevices.contains(where: { $0.uid == uid }) {
-                    Divider()
-                    Toggle(isOn: .constant(true)) {
-                        Label("Missing Device — using System Default", systemImage: "exclamationmark.triangle")
-                    }
-                    .disabled(true)
-                }
-            }
-            Menu("Boost") {
-                boostItem(0, title: "Off (0 dB)")
-                boostItem(3, title: "+3 dB")
-                boostItem(6, title: "+6 dB")
-                boostItem(9, title: "+9 dB")
-                boostItem(12, title: "+12 dB")
-            }
-            Button {
-                withAnimation(expandAnimation) {
-                    expandedKey = isExpanded ? nil : app.configKey
-                }
-            } label: {
-                if cfg.eq.enabled {
-                    Label(isExpanded ? "Hide Equalizer" : "Show Equalizer", systemImage: "checkmark")
-                } else {
-                    Text(isExpanded ? "Hide Equalizer" : "Show Equalizer")
-                }
-            }
-            Divider()
-            Button("Reset App Settings") {
-                closeDrawerIfNeeded()
-                controller.resetConfig(for: app)
-            }
-            if configuredSilent {
-                Button("Forget This App") {
-                    closeDrawerIfNeeded()
-                    controller.resetConfig(for: app)
-                }
-            }
-            if let errorMessage {
-                Divider()
-                Button("Copy Diagnostics") {
-                    copyDiagnostics(errorMessage)
-                }
-            }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .accessibilityLabel("Options for \(app.name)")
-    }
-
-    private func routeItem(_ uid: String?, title: String, symbol: String? = nil) -> some View {
-        Toggle(isOn: Binding(
-            get: { controller.config(for: app).outputDeviceUID == uid },
-            set: { on in
-                guard on else { return }
-                var updated = controller.config(for: app)
-                updated.outputDeviceUID = uid
-                controller.setConfig(updated, for: app)
-            }
-        )) {
-            if let symbol {
-                Label(title, systemImage: symbol)
-            } else {
-                Text(title)
-            }
-        }
-    }
-
-    private func boostItem(_ value: Float, title: String) -> some View {
-        Toggle(isOn: Binding(
-            get: { abs(controller.config(for: app).boostDB - value) < 0.01 },
-            set: { on in
-                guard on else { return }
-                var updated = controller.config(for: app)
-                updated.boostDB = value
-                controller.setConfig(updated, for: app)
-            }
-        )) {
-            Text(title)
-        }
-    }
-
-    // MARK: Drawer
+    // MARK: Drawer — routing, boost, EQ and reset, all visible and stacked
 
     private var drawer: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
+            DrawerCaption(text: "Output")
+                .padding(.leading, 2)
+                .padding(.bottom, 3)
+            routingList
+            Divider()
+                .opacity(0.5)
+                .padding(.vertical, 8)
             BoostRow(boostDB: config.boostDB)
             Divider()
                 .opacity(0.5)
                 .padding(.vertical, 8)
             EQPanel(settings: config.eq)
+            drawerFooter
         }
         .padding(10)
+    }
+
+    private var routingList: some View {
+        let cfg = controller.config(for: app)
+        return VStack(spacing: 1) {
+            DeviceSelectRow(
+                symbol: "macwindow.on.rectangle",
+                title: "System Default",
+                selected: cfg.outputDeviceUID == nil,
+                compact: true
+            ) {
+                route(to: nil)
+            }
+            ForEach(controller.devices.outputDevices) { device in
+                DeviceSelectRow(
+                    symbol: device.symbolName,
+                    title: device.name,
+                    selected: cfg.outputDeviceUID == device.uid,
+                    compact: true
+                ) {
+                    route(to: device.uid)
+                }
+            }
+            if let uid = cfg.outputDeviceUID,
+               !controller.devices.outputDevices.contains(where: { $0.uid == uid }) {
+                DeviceSelectRow(
+                    symbol: "exclamationmark.triangle",
+                    title: "Unplugged device",
+                    selected: true,
+                    compact: true,
+                    subtitle: "Using System Default until it returns"
+                ) {
+                    route(to: nil)
+                }
+            }
+        }
+    }
+
+    private func route(to uid: String?) {
+        var updated = controller.config(for: app)
+        guard updated.outputDeviceUID != uid else { return }
+        updated.outputDeviceUID = uid
+        controller.setConfig(updated, for: app)
+    }
+
+    @ViewBuilder
+    private var drawerFooter: some View {
+        if hasSavedConfig || errorMessage != nil {
+            HStack {
+                if let errorMessage {
+                    Button("Copy Diagnostics") {
+                        copyDiagnostics(errorMessage)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.rowSubtitle)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                if hasSavedConfig {
+                    Button("Reset") {
+                        closeDrawerIfNeeded()
+                        controller.resetConfig(for: app)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.rowSubtitle)
+                    .foregroundStyle(.secondary)
+                    .help("Forget every setting for \(app.name)")
+                }
+            }
+            .padding(.top, 10)
+        }
     }
 
     // MARK: Actions

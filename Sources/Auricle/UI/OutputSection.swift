@@ -42,55 +42,40 @@ struct OutputSection: View {
     }
 }
 
+// Every output device stays visible, stacked — selection is one click, no hidden picker.
 private struct OutputDeviceRow: View {
     @EnvironmentObject private var controller: AudioController
 
     var body: some View {
         let devices = controller.devices
-        let device = devices.defaultOutput
-        HStack(spacing: 8) {
-            Image(systemName: device?.symbolName ?? "speaker.wave.2")
-                .font(.system(size: 16))
-                .foregroundStyle(.secondary)
-                .frame(width: 20, height: 20)
-            if devices.outputDevices.isEmpty {
+        if devices.outputDevices.isEmpty {
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.slash")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20)
                 Text("No output device")
                     .font(.rowTitle)
                     .foregroundStyle(.secondary)
-            } else {
-                Menu {
-                    ForEach(devices.outputDevices) { candidate in
-                        Toggle(isOn: Binding(
-                            get: { candidate.id == devices.defaultOutputID },
-                            set: { on in if on { devices.setDefaultOutput(candidate) } }
-                        )) {
-                            Label(candidate.name, systemImage: candidate.symbolName)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(device?.name ?? "Select Device")
-                            .font(.rowTitle)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Color.textTertiary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .help(device?.name ?? "Select output device")
-                .accessibilityLabel("Output device")
-                .accessibilityValue(device?.name ?? "none")
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+        } else {
+            VStack(spacing: 1) {
+                ForEach(devices.outputDevices) { device in
+                    DeviceSelectRow(
+                        symbol: device.symbolName,
+                        title: device.name,
+                        selected: device.id == devices.defaultOutputID
+                    ) {
+                        devices.setDefaultOutput(device)
+                    }
+                    .accessibilityLabel("Output device \(device.name)")
+                }
+            }
+            .padding(.horizontal, 6)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
-        .rowHoverHighlight()
     }
 }
 

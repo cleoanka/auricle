@@ -231,6 +231,76 @@ struct VolumeSlider: View {
     }
 }
 
+// MARK: - Device selection row (always-visible stacked device lists — no hidden pickers)
+
+struct DeviceSelectRow: View {
+    var symbol: String
+    var title: String
+    var selected: Bool
+    /// Smaller metrics for rows inside an app drawer.
+    var compact: Bool = false
+    /// Warning line under the title (e.g. a routed device that is unplugged).
+    var subtitle: String? = nil
+    var action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: compact ? 12 : 14))
+                    .foregroundStyle(selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(compact ? .rowSubtitle : .rowTitle)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.warning)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "checkmark")
+                    .font(.system(size: compact ? 10 : 11, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .opacity(selected ? 1 : 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: subtitle == nil ? (compact ? 28 : 34) : 40)
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(hovering ? Color.rowHover : Color.clear)
+        )
+        .onHover { inside in
+            withAnimation(.easeOut(duration: inside ? 0.12 : 0.20)) { hovering = inside }
+        }
+        .help(title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+}
+
+/// Tiny uppercase label used inside drawers ("OUTPUT", …).
+struct DrawerCaption: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9.5, weight: .semibold))
+            .tracking(0.7)
+            .textCase(.uppercase)
+            .foregroundStyle(Color.textTertiary)
+    }
+}
+
 // MARK: - Boost row (shared by the master drawer and per-app drawers)
 
 struct BoostRow: View {

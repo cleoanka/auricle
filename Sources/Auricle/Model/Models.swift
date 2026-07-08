@@ -4,7 +4,7 @@ import Foundation
 
 enum AppInfo {
     static let name = "Auricle"
-    static let version = "0.1.1"
+    static let version = "0.2.0"
     static let bundleID = "io.github.cleoanka.Auricle"
     static let repoURL = URL(string: "https://github.com/cleoanka/auricle")!
 }
