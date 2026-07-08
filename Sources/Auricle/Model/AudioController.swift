@@ -1,16 +1,10 @@
 import AppKit
+import CoreAudio
 import Foundation
 
-// AGENT-TODO(proc): implement the engine-reconciliation + persistence logic marked below.
-// This class is the single coordination point:
-// - owns AudioDeviceManager, AudioProcessMonitor, SettingsStore and all ProcessTapEngine instances
-// - decides when an app needs an engine (config.needsEngine) and when the master chain does
-//   (masterConfig.needsMasterEngine), creates/updates/tears them down
-// - retargets engines when the default output device changes (engines whose config has
-//   outputDeviceUID == nil follow the default; master always follows the default)
-// - handles engine failures: "permission:" messages set permissionIssue, others land in engineErrors
-// - persists state (debounced via SettingsStore) whenever configs/presets/settings change
-// - when rememberConfigs is true, saved configs auto-apply as soon as their app appears
+// Single coordination point: owns the device manager, process monitor, settings store and
+// every ProcessTapEngine. Reconciles engines against configs whenever apps/devices change,
+// persists state (debounced by SettingsStore), and surfaces engine failures.
 
 @MainActor
 final class AudioController: ObservableObject {
@@ -31,21 +25,49 @@ final class AudioController: ObservableObject {
 
     private var engines: [String: ProcessTapEngine] = [:]
     private var masterEngine: ProcessTapEngine?
+    /// Last object-ID set handed to each engine, to detect helper processes coming/going.
+    private var engineObjectIDs: [String: [AudioObjectID]] = [:]
+    private var terminateObserver: NSObjectProtocol?
+
+    /// engineErrors key for the master chain — deliberately not a plausible configKey.
+    private static let masterErrorKey = "__auricle.master__"
 
     init() {
         let state = store.load()
-        appConfigs = state.appConfigs
+        // rememberConfigs == false means saved per-app configs are neither kept nor auto-applied.
+        appConfigs = state.rememberConfigs ? state.appConfigs : [:]
         masterConfig = state.masterConfig
         rememberConfigs = state.rememberConfigs
         customPresets = state.customPresets
 
-        // AGENT-TODO(proc): wire callbacks BEFORE starting:
-        // devices.onDefaultOutputChanged / onDeviceListChanged -> retarget & re-validate engines
-        // processes.onChange -> reconcileEngines()
-        // processes.keepAliveKeys = Set(appConfigs.keys)
+        devices.onDefaultOutputChanged = { [weak self] in
+            self?.defaultOutputChanged()
+        }
+        devices.onDeviceListChanged = { [weak self] in
+            self?.deviceListChanged()
+        }
+        processes.onChange = { [weak self] in
+            self?.reconcileEngines()
+        }
+        processes.keepAliveKeys = Set(appConfigs.keys)
+
+        terminateObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [store] _ in
+            store.flush()
+        }
+
         devices.start()
         processes.start()
         reconcileEngines()
+    }
+
+    deinit {
+        if let terminateObserver {
+            NotificationCenter.default.removeObserver(terminateObserver)
+        }
     }
 
     // MARK: Per-app configs
@@ -55,21 +77,51 @@ final class AudioController: ObservableObject {
     }
 
     func setConfig(_ config: AppAudioConfig, for app: AudioApp) {
-        appConfigs[app.configKey] = config
-        // AGENT-TODO(proc): reconcile this app's engine (create/apply/stop), update keepAliveKeys, persist()
+        let key = app.configKey
+        // Any config change is a fresh attempt: clear stale failure state.
+        permissionIssue = false
+        engineErrors.removeValue(forKey: key)
+
+        if config == AppAudioConfig() {
+            appConfigs.removeValue(forKey: key)
+        } else {
+            appConfigs[key] = config
+        }
+        processes.keepAliveKeys = Set(appConfigs.keys)
+
+        if config.needsEngine {
+            if let engine = engines[key] {
+                if engineObjectIDs[key] != app.objectIDs {
+                    engineObjectIDs[key] = app.objectIDs
+                    engine.updateSource(objectIDs: app.objectIDs)
+                }
+                engine.apply(config: config, targetDeviceUID: config.outputDeviceUID)
+            } else {
+                startEngine(for: app, config: config)
+            }
+        } else {
+            removeEngine(forKey: key)
+        }
+        persist()
     }
 
     func resetConfig(for app: AudioApp) {
         appConfigs.removeValue(forKey: app.configKey)
         engineErrors.removeValue(forKey: app.configKey)
-        // AGENT-TODO(proc): stop+remove engine, update keepAliveKeys, persist()
+        permissionIssue = false
+        removeEngine(forKey: app.configKey)
+        processes.keepAliveKeys = Set(appConfigs.keys)
+        persist()
     }
 
     // MARK: Master chain
 
     func setMasterConfig(_ config: AppAudioConfig) {
         masterConfig = config
-        // AGENT-TODO(proc): reconcile masterEngine, persist()
+        permissionIssue = false
+        engineErrors.removeValue(forKey: Self.masterErrorKey)
+        reconcileMasterEngine()
+        persist()
     }
 
     // MARK: Presets
@@ -109,18 +161,108 @@ final class AudioController: ObservableObject {
     // MARK: Internals
 
     private func reconcileEngines() {
-        // AGENT-TODO(proc): diff processes.apps x appConfigs against `engines`:
-        // - config.needsEngine && app present -> ensure engine exists, engine.apply(config, targetDeviceUID)
-        // - app gained/lost helper process objects -> engine.updateSource(objectIDs:)
-        // - config gone or app gone -> engine.stop(), remove
-        // - master: masterConfig.needsMasterEngine -> ensure masterEngine (source: .systemWide,
-        //   target nil = default), else stop it
-        // - wire onFailure of every engine (permission: -> permissionIssue = true)
+        let appsByKey = Dictionary(processes.apps.map { ($0.configKey, $0) }) { first, _ in first }
+
+        for (key, engine) in engines {
+            let stillNeeded = appConfigs[key]?.needsEngine == true && appsByKey[key] != nil
+            if !stillNeeded {
+                engine.stop()
+                engines.removeValue(forKey: key)
+                engineObjectIDs.removeValue(forKey: key)
+            }
+        }
+
+        for (key, config) in appConfigs where config.needsEngine {
+            guard let app = appsByKey[key] else { continue }
+            if let engine = engines[key] {
+                if engineObjectIDs[key] != app.objectIDs {
+                    engineObjectIDs[key] = app.objectIDs
+                    engine.updateSource(objectIDs: app.objectIDs)
+                }
+            } else if !permissionIssue, engineErrors[key] == nil {
+                startEngine(for: app, config: config)
+            }
+        }
+
+        reconcileMasterEngine()
+    }
+
+    private func reconcileMasterEngine() {
+        if masterConfig.needsMasterEngine {
+            if masterEngine == nil {
+                guard !permissionIssue, engineErrors[Self.masterErrorKey] == nil else { return }
+                let engine = ProcessTapEngine(source: .systemWide)
+                attachFailureHandler(engine, key: Self.masterErrorKey)
+                masterEngine = engine
+            }
+            // Master always follows the system default output device.
+            masterEngine?.apply(config: masterConfig, targetDeviceUID: nil)
+        } else if let engine = masterEngine {
+            engine.stop()
+            masterEngine = nil
+        }
+    }
+
+    private func startEngine(for app: AudioApp, config: AppAudioConfig) {
+        let key = app.configKey
+        let engine = ProcessTapEngine(source: .app(objectIDs: app.objectIDs))
+        attachFailureHandler(engine, key: key)
+        engines[key] = engine
+        engineObjectIDs[key] = app.objectIDs
+        engine.apply(config: config, targetDeviceUID: config.outputDeviceUID)
+    }
+
+    private func removeEngine(forKey key: String) {
+        if let engine = engines.removeValue(forKey: key) {
+            engine.stop()
+        }
+        engineObjectIDs.removeValue(forKey: key)
+    }
+
+    private func attachFailureHandler(_ engine: ProcessTapEngine, key: String) {
+        // Engines invoke onFailure on the main queue.
+        engine.onFailure = { [weak self] message in
+            self?.handleEngineFailure(key: key, message: message)
+        }
+    }
+
+    private func handleEngineFailure(key: String, message: String) {
+        if message.hasPrefix("permission:") {
+            permissionIssue = true
+        } else {
+            engineErrors[key] = message
+        }
+        // Drop the failed engine; the failure record gates recreation until a config change.
+        if key == Self.masterErrorKey {
+            masterEngine?.stop()
+            masterEngine = nil
+        } else {
+            removeEngine(forKey: key)
+        }
+    }
+
+    private func defaultOutputChanged() {
+        for (key, engine) in engines {
+            guard let config = appConfigs[key], config.outputDeviceUID == nil else { continue }
+            engine.apply(config: config, targetDeviceUID: nil)
+        }
+        if let masterEngine {
+            masterEngine.apply(config: masterConfig, targetDeviceUID: nil)
+        }
+    }
+
+    private func deviceListChanged() {
+        // Routed engines re-resolve their UID: a vanished device falls back to the default
+        // (routing is kept), a returning device is picked up again. Never surfaced as an error.
+        for (key, engine) in engines {
+            guard let config = appConfigs[key], let uid = config.outputDeviceUID else { continue }
+            engine.apply(config: config, targetDeviceUID: uid)
+        }
     }
 
     private func persist() {
         store.save(PersistedState(
-            appConfigs: appConfigs,
+            appConfigs: rememberConfigs ? appConfigs : [:],
             masterConfig: masterConfig,
             rememberConfigs: rememberConfigs,
             customPresets: customPresets
