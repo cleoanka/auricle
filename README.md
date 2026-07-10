@@ -24,10 +24,10 @@ Auricle sits in your menu bar and gives every app that plays audio its own volum
 
 ### Download
 
-1. Grab `Auricle-<version>.zip` from [Releases](../../releases), unzip, and move `Auricle.app` to `/Applications`.
-2. **First launch will be blocked by Gatekeeper.** Auricle is ad-hoc signed and not notarized (there is no paid Developer ID behind this project), so macOS will say it "cannot be opened because Apple cannot check it for malicious software". This is expected. To open it anyway, either:
-   - Right-click (Ctrl-click) `Auricle.app` → **Open** → **Open**. On macOS 15+ you may additionally need to go to **System Settings → Privacy & Security**, click **Open Anyway**, then open the app again. Or:
-   - From Terminal, strip the quarantine attribute:
+1. Grab `Auricle-<version>.dmg` from [Releases](../../releases), open it, and drag **Auricle** into **Applications** (a zip is also published if you prefer).
+2. **The first launch will be blocked by Gatekeeper.** Auricle is ad-hoc signed and not notarized (there is no paid Developer ID behind this project), so double-clicking it the first time makes macOS say it "cannot be opened because Apple cannot check it for malicious software". This is expected — the instructions are also printed inside the DMG window:
+   - Double-click Auricle once (let macOS refuse), then open **System Settings → Privacy & Security**, scroll down to the message about Auricle, click **Open Anyway** and confirm. Needed only once. (On macOS 13/14, right-click → **Open** → **Open** also works; macOS 15+ removed that shortcut.)
+   - Terminal alternative:
 
      ```sh
      xattr -dr com.apple.quarantine /Applications/Auricle.app
@@ -85,8 +85,8 @@ flowchart LR
 
 ## Hızlı Başlangıç
 
-1. [Releases](../../releases) sayfasından zip'i indirin, `Auricle.app`'i `/Applications` klasörüne taşıyın.
-2. İlk açılışta Gatekeeper engeller: uygulamaya sağ tıklayıp **Aç** deyin (macOS 15+'ta ayrıca Sistem Ayarları → Gizlilik ve Güvenlik → **Yine de Aç**), ya da Terminal'den `xattr -dr com.apple.quarantine /Applications/Auricle.app` çalıştırın.
+1. [Releases](../../releases) sayfasından `.dmg` dosyasını indirin, açın ve **Auricle**'ı **Applications** klasörüne sürükleyin.
+2. İlk açılışta Gatekeeper engeller (imzalı ama noterli değil): Auricle'a bir kez çift tıklayın, macOS reddedince **Sistem Ayarları → Gizlilik ve Güvenlik**'e inin ve Auricle için **Yine de Aç**'a basın — bir kereye mahsus. (Alternatif: Terminal'den `xattr -dr com.apple.quarantine /Applications/Auricle.app`.)
 3. Menü çubuğundaki dalga simgesine tıklayın; istendiğinde **Sistem Sesi Kaydı** iznini verin (ses cihazınızdan dışarı çıkmaz, hiçbir şey kaydedilmez).
 4. Ses çalan her uygulama listede belirir: sesini kısın, susturun, ekolayzır açın veya başka bir çıkış aygıtına yönlendirin. Ayarlar hatırlanır.
 
