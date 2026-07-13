@@ -137,10 +137,13 @@ final class GraphicEQ {
         vDSP_biquadm_ResetState(setup)
     }
 
-    private static func coefficients(gainsDB: [Float],
-                                     preampDB: Float,
-                                     sampleRate: Double,
-                                     channelCount: Int) -> [Double] {
+    /// Compute the flat biquad coefficient array `[b0, b1, b2, a1, a2]` per section,
+    /// per channel. Exposed at package scope so the test target can verify filter
+    /// stability, clamping and preamp placement without spinning up audio hardware.
+    static func coefficients(gainsDB: [Float],
+                             preampDB: Float,
+                             sampleRate: Double,
+                             channelCount: Int) -> [Double] {
         let preamp = pow(10.0, Double(max(-gainLimitDB, min(gainLimitDB, preampDB))) / 20)
         var flat = [Double](repeating: 0, count: 5 * bandCount * channelCount)
         for section in 0..<bandCount {

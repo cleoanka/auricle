@@ -10,6 +10,11 @@ let package = Package(
         .executableTarget(
             name: "Auricle",
             path: "Sources/Auricle"
+        ),
+        .testTarget(
+            name: "AuricleTests",
+            dependencies: ["Auricle"],
+            path: "Tests/AuricleTests"
         )
     ],
     swiftLanguageModes: [.v5]
