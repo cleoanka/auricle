@@ -25,6 +25,6 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>Auricle captures system audio so it can transcribe what is playing on your Mac. Audio never leaves your device.</string>
+	<string>Auricle taps each app's audio so it can apply per-app volume, EQ, boost, and output routing, then hand the samples straight back to your output device. Audio never leaves your Mac and nothing is recorded.</string>
 </dict>
 </plist>
