@@ -1,5 +1,11 @@
 # Auricle
 
+[![CI](https://github.com/cleoanka/auricle/actions/workflows/ci.yml/badge.svg)](https://github.com/cleoanka/auricle/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/cleoanka/auricle?sort=semver)](https://github.com/cleoanka/auricle/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![macOS 14.4+](https://img.shields.io/badge/macOS-14.4%2B-blue)](#requirements)
+[![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://swift.org)
+
 Per-app volume, EQ, boost, and output routing — a menu bar mixer for macOS.
 
 Auricle sits in your menu bar and gives every app that plays audio its own volume slider, mute button, gain boost, 10-band equalizer, and output device. It is built entirely on public Core Audio process-tap APIs introduced in macOS 14.4, written in Swift and SwiftUI, with no third-party dependencies.
@@ -83,12 +89,26 @@ flowchart LR
 - **Per-app audio bypasses the master chain by design.** An app with its own tap is routed directly (with its own boost/EQ) and excluded from the system-wide tap; the master Boost/EQ applies only to un-managed audio. This avoids double processing and feedback, but means master EQ does not stack on top of per-app EQ.
 - Launch-at-login with an ad-hoc signature is best-effort; if the toggle fails, move Auricle to `/Applications` and try again.
 
-## Hızlı Başlangıç
+## Diagnostics
 
-1. [Releases](../../releases) sayfasından `.dmg` dosyasını indirin, açın ve **Auricle**'ı **Applications** klasörüne sürükleyin.
-2. İlk açılışta Gatekeeper engeller (imzalı ama noterli değil): Auricle'a bir kez çift tıklayın, macOS reddedince **Sistem Ayarları → Gizlilik ve Güvenlik**'e inin ve Auricle için **Yine de Aç**'a basın — bir kereye mahsus. (Alternatif: Terminal'den `xattr -dr com.apple.quarantine /Applications/Auricle.app`.)
-3. Menü çubuğundaki dalga simgesine tıklayın; istendiğinde **Sistem Sesi Kaydı** iznini verin (ses cihazınızdan dışarı çıkmaz, hiçbir şey kaydedilmez).
-4. Ses çalan her uygulama listede belirir: sesini kısın, susturun, ekolayzır açın veya başka bir çıkış aygıtına yönlendirin. Ayarlar hatırlanır.
+Run Auricle in headless probe mode to dump the current Core Audio state — devices,
+default input/output, and audio process objects — as JSON, without creating any taps
+or aggregates (so it triggers no permission prompt):
+
+```sh
+Auricle --probe
+# or, from a source checkout:
+swift run Auricle --probe
+```
+
+This is handy for reporting bugs: it shows exactly what Auricle sees.
+
+## Development
+
+Building, testing, and packaging are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
+In short: `swift build`, `swift test`, and `./scripts/build-app.sh` (full Xcode
+required — see the note above). The version number lives in a single [`VERSION`](VERSION)
+file that `AppInfo.version` and CI are checked against.
 
 ## License
 
