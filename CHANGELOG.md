@@ -13,6 +13,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   version-consistency check between the `VERSION` file and `AppInfo.version`.
 - `.editorconfig`, `.swiftlint.yml`, `CONTRIBUTING.md`, and this changelog.
 
+### Fixed
+- After a coreaudiod restart (sleep/wake, `killall coreaudiod`) each managed app could
+  end up with two replay chains — doubled audio and a leaked IO proc. Dead chains are
+  now discarded before the device/process refresh and rebuilt once afterwards.
+- A transient engine failure no longer disables an app's settings until a manual
+  retry: the engine is retried when the app relaunches or the audio devices change.
+- A settings file with missing keys (e.g. from another version) no longer resets all
+  per-app settings and custom presets; missing values fall back to their defaults.
+- Build is warning-free again (`SettingsStore.save` capture).
+
 ## [0.2.1] — 2026-07-08
 
 ### Changed
