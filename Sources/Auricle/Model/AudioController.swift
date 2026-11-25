@@ -28,6 +28,9 @@ final class AudioController: ObservableObject {
     private var masterEngine: ProcessTapEngine?
     /// Last object-ID set handed to each engine, to detect helper processes coming/going.
     private var engineObjectIDs: [String: [AudioObjectID]] = [:]
+    /// Object-ID set an engine had when it failed: a different set (app relaunched,
+    /// helpers changed) is a fresh attempt, so the recorded error does not pin it forever.
+    private var failedObjectIDs: [String: [AudioObjectID]] = [:]
     private var terminateObserver: NSObjectProtocol?
     private var cancellables: Set<AnyCancellable> = []
     private var serviceRestartToken: ListenerToken?
@@ -98,7 +101,7 @@ final class AudioController: ObservableObject {
         // A config change is a fresh attempt for this app's engine. The global permission
         // flag is only cleared by an explicit retry, so slider drags while consent is
         // missing cannot spawn build/fail cycles or flicker the banner.
-        engineErrors.removeValue(forKey: key)
+        clearEngineError(forKey: key)
 
         if config == AppAudioConfig() {
             appConfigs.removeValue(forKey: key)
@@ -126,7 +129,7 @@ final class AudioController: ObservableObject {
 
     func resetConfig(for app: AudioApp) {
         appConfigs.removeValue(forKey: app.configKey)
-        engineErrors.removeValue(forKey: app.configKey)
+        clearEngineError(forKey: app.configKey)
         removeEngine(forKey: app.configKey)
         processes.keepAliveKeys = Set(appConfigs.keys)
         updateMasterExclusions()
@@ -205,6 +208,12 @@ final class AudioController: ObservableObject {
 
     private func reconcileEngines() {
         let appsByKey = Dictionary(processes.apps.map { ($0.configKey, $0) }) { first, _ in first }
+
+        for key in Self.retriableErrorKeys(errors: engineErrors,
+                                           failedObjectIDs: failedObjectIDs,
+                                           currentObjectIDs: appsByKey.mapValues(\.objectIDs)) {
+            clearEngineError(forKey: key)
+        }
 
         for (key, engine) in engines {
             let stillNeeded = appConfigs[key]?.needsEngine == true && appsByKey[key] != nil
@@ -290,6 +299,33 @@ final class AudioController: ObservableObject {
         }
     }
 
+    /// Recorded per-app failures that no longer apply because the app is present with a
+    /// different process-object set than when it failed (relaunched, helpers changed).
+    /// An app that is absent stays gated; the master key has no object IDs and is cleared
+    /// by device changes instead.
+    nonisolated static func retriableErrorKeys(errors: [String: String],
+                                               failedObjectIDs: [String: [AudioObjectID]],
+                                               currentObjectIDs: [String: [AudioObjectID]]) -> [String] {
+        errors.keys.filter { key in
+            guard let current = currentObjectIDs[key] else { return false }
+            return failedObjectIDs[key] != current
+        }.sorted()
+    }
+
+    private func clearEngineError(forKey key: String) {
+        engineErrors.removeValue(forKey: key)
+        failedObjectIDs.removeValue(forKey: key)
+    }
+
+    /// A device appeared/vanished or the default changed: earlier failures (typically
+    /// "no usable output device") may no longer hold, so give every gated engine one retry.
+    private func retryFailedEnginesAfterDeviceChange() {
+        guard !engineErrors.isEmpty else { return }
+        engineErrors.removeAll()
+        failedObjectIDs.removeAll()
+        reconcileEngines()
+    }
+
     private func handleEngineFailure(key: String, engine: ProcessTapEngine, message: String) {
         // A stale delivery (the engine at this key was already replaced or removed)
         // must not tear down the live engine or pin a spurious error.
@@ -299,8 +335,10 @@ final class AudioController: ObservableObject {
             permissionIssue = true
         } else {
             engineErrors[key] = message
+            failedObjectIDs[key] = engineObjectIDs[key]
         }
-        // Drop the failed engine; the failure record gates recreation until a config change.
+        // Drop the failed engine; the failure record gates recreation until a config change,
+        // a device change, or the app reappearing with different process objects.
         if key == Self.masterErrorKey {
             masterEngine?.stop()
             masterEngine = nil
@@ -322,6 +360,7 @@ final class AudioController: ObservableObject {
         if let masterEngine {
             masterEngine.apply(config: masterConfig, targetDeviceUID: nil)
         }
+        retryFailedEnginesAfterDeviceChange()
     }
 
     private func deviceListChanged() {
@@ -332,6 +371,7 @@ final class AudioController: ObservableObject {
             guard let config = appConfigs[key], let uid = config.outputDeviceUID else { continue }
             engine.apply(config: config, targetDeviceUID: uid)
         }
+        retryFailedEnginesAfterDeviceChange()
     }
 
     private func serviceRestarted() {
