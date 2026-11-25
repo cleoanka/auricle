@@ -18,7 +18,7 @@ Auricle sits in your menu bar and gives every app that plays audio its own volum
 - **Device & input control** — switch the default output device, adjust master volume/mute, and control input device gain and mute from the same popover.
 - **EQ presets** — built-in presets (Flat, Bass Boost, Vocal, Loudness, …) plus your own saved presets.
 - **Settings memory** — per-app volume, EQ, routing, and boost are remembered and restored when the app returns.
-- **Live stereo meters** per app, so you can see who is making noise.
+- **Live stereo meters** for every app Auricle is actively processing (any app with a non-default setting).
 - **Native** — SwiftUI menu bar app, system materials, SF Symbols, zero dependencies.
 
 ## Requirements
@@ -102,6 +102,9 @@ swift run Auricle --probe
 ```
 
 This is handy for reporting bugs: it shows exactly what Auricle sees.
+Review it before pasting it anywhere public: it contains your device names and UIDs
+(Bluetooth UIDs embed the device's MAC address) and the PID and bundle ID of every
+process that uses audio.
 
 ## Development
 
