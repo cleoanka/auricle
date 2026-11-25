@@ -31,7 +31,8 @@ final class SettingsStore: @unchecked Sendable {
     }
 
     func save(_ state: PersistedState) {
-        queue.async {
+        queue.async { [weak self] in
+            guard let self else { return }
             self.pending = state
             self.scheduledWrite?.cancel()
             let item = DispatchWorkItem { [weak self] in self?.writePending() }
