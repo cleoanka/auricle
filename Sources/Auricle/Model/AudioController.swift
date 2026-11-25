@@ -338,12 +338,20 @@ final class AudioController: ObservableObject {
         // coreaudiod restarted: every HAL object ID (devices, taps, aggregates, per-chain
         // listeners) is dead while device UIDs stay the same, so apply() alone would never
         // rebuild. Refresh the world and force-rebuild every live engine.
+        // Order matters: the refreshes below synchronously queue updateSource/apply on the
+        // engines, which would otherwise build a new chain that a later discard leaks
+        // (doubled audio, a stray IOProc writing into freed levels). So: forget the dead
+        // chains first, refresh (new process IDs reach the engines), then rebuild.
+        for engine in engines.values {
+            engine.discardChainAfterServiceRestart()
+        }
+        masterEngine?.discardChainAfterServiceRestart()
         devices.serviceRestarted()
         processes.refresh()
         for engine in engines.values {
-            engine.handleServiceRestart()
+            engine.rebuildAfterServiceRestart()
         }
-        masterEngine?.handleServiceRestart()
+        masterEngine?.rebuildAfterServiceRestart()
     }
 
     private func persist() {

@@ -59,6 +59,7 @@ final class ProcessTapEngine {
     private var lastConfig: AppAudioConfig?
     private var lastRequestedUID: String?
     private var chain: Chain?
+    private var restartState = ServiceRestartState()
     /// Bumped at the start of every buildChain so stale failure deliveries can be dropped.
     private let buildGeneration = OSAllocatedUnfairLock(initialState: 0)
 
@@ -153,14 +154,27 @@ final class ProcessTapEngine {
         controlQueue.async { self.tearDownChain() }
     }
 
-    /// coreaudiod restarted: every HAL object ID in the chain is dead. Drop them without
-    /// destroying (the IDs no longer refer to our objects) and rebuild from the last config.
-    func handleServiceRestart() {
+    /// coreaudiod restarted, step 1 — must be queued before anything else can reach
+    /// controlQueue: every HAL object ID in the chain is dead, so forget the chain without
+    /// destroying it (the numeric IDs may already belong to other objects, including other
+    /// engines' fresh chains). updateSource/apply arriving afterwards then see no chain.
+    func discardChainAfterServiceRestart() {
         controlQueue.async { [weak self] in
-            guard let self, self.chain != nil else { return }
+            guard let self else { return }
+            let hadChain = self.chain != nil
+            guard self.restartState.discard(hasChain: hadChain) else { return }
             self.chain = nil
             self.isRunning = false
             self.levels.update(repeating: 0, count: 2)
+        }
+    }
+
+    /// coreaudiod restarted, step 2 — queue after the process/device lists were refreshed
+    /// (so tappedObjectIDs are the new ones): rebuild from the last config, unless an
+    /// apply/updateSource in between already built a fresh chain.
+    func rebuildAfterServiceRestart() {
+        controlQueue.async { [weak self] in
+            guard let self, self.restartState.shouldRebuild(hasChain: self.chain != nil) else { return }
             self.buildChain()
         }
     }
@@ -764,4 +778,23 @@ private func isFloat32(_ format: AudioStreamBasicDescription) -> Bool {
     format.mFormatID == kAudioFormatLinearPCM
         && format.mFormatFlags & kAudioFormatFlagIsFloat != 0
         && format.mBitsPerChannel == 32
+}
+
+/// coreaudiod-restart bookkeeping for one engine, kept free of HAL calls so the
+/// discard-then-rebuild ordering is unit-testable. Only touched on the engine's controlQueue.
+struct ServiceRestartState {
+    private(set) var rebuildPending = false
+
+    /// Step 1. Returns true when a (now dead) chain must be forgotten; only then is a
+    /// rebuild owed, so an engine that had no chain is left to its own pending apply.
+    mutating func discard(hasChain: Bool) -> Bool {
+        if hasChain { rebuildPending = true }
+        return hasChain
+    }
+
+    /// Step 2. True at most once per discard, and only if nothing rebuilt the chain since.
+    mutating func shouldRebuild(hasChain: Bool) -> Bool {
+        defer { rebuildPending = false }
+        return rebuildPending && !hasChain
+    }
 }
