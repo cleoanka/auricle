@@ -393,12 +393,14 @@ final class AudioController: ObservableObject {
         // engines, which would otherwise build a new chain that a later discard leaks
         // (doubled audio, a stray IOProc writing into freed levels). So: forget the dead
         // chains first, refresh (new process IDs reach the engines), then rebuild.
+        // Processes before devices: a default-output change from the device refresh
+        // applies (and so builds) right away, and must not build on dead process IDs.
         for engine in engines.values {
             engine.discardChainAfterServiceRestart()
         }
         masterEngine?.discardChainAfterServiceRestart()
-        devices.serviceRestarted()
         processes.serviceRestarted()
+        devices.serviceRestarted()
         for engine in engines.values {
             engine.rebuildAfterServiceRestart()
         }
