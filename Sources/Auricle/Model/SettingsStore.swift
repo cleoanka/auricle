@@ -7,6 +7,22 @@ struct PersistedState: Codable {
     var customPresets: [EQPreset] = []
 }
 
+extension PersistedState {
+    /// Missing keys fall back to defaults (see the tolerant decoders in Models.swift).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = PersistedState()
+        appConfigs = try container.decodeIfPresent([String: AppAudioConfig].self, forKey: .appConfigs)
+            ?? defaults.appConfigs
+        masterConfig = try container.decodeIfPresent(AppAudioConfig.self, forKey: .masterConfig)
+            ?? defaults.masterConfig
+        rememberConfigs = try container.decodeIfPresent(Bool.self, forKey: .rememberConfigs)
+            ?? defaults.rememberConfigs
+        customPresets = try container.decodeIfPresent([EQPreset].self, forKey: .customPresets)
+            ?? defaults.customPresets
+    }
+}
+
 // All mutable state is confined to `queue`, hence the unchecked Sendable.
 final class SettingsStore: @unchecked Sendable {
     private let queue = DispatchQueue(label: "io.github.cleoanka.Auricle.settings")

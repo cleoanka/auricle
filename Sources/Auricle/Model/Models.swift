@@ -81,6 +81,19 @@ struct EQSettings: Codable, Equatable {
     var isFlat: Bool { gains.allSatisfy { $0 == 0 } && preampDB == 0 }
 }
 
+// Tolerant decoding: a key missing from settings.json (e.g. a field added in a later
+// version) falls back to its default instead of failing the whole file, which
+// SettingsStore would otherwise replace with defaults and overwrite on the next save.
+extension EQSettings {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = EQSettings()
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
+        gains = try container.decodeIfPresent([Float].self, forKey: .gains) ?? defaults.gains
+        preampDB = try container.decodeIfPresent(Float.self, forKey: .preampDB) ?? defaults.preampDB
+    }
+}
+
 // MARK: - Per-app / master configuration
 
 struct AppAudioConfig: Codable, Equatable {
@@ -104,6 +117,18 @@ struct AppAudioConfig: Codable, Equatable {
     }
 }
 
+extension AppAudioConfig {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AppAudioConfig()
+        volume = try container.decodeIfPresent(Float.self, forKey: .volume) ?? defaults.volume
+        boostDB = try container.decodeIfPresent(Float.self, forKey: .boostDB) ?? defaults.boostDB
+        isMuted = try container.decodeIfPresent(Bool.self, forKey: .isMuted) ?? defaults.isMuted
+        eq = try container.decodeIfPresent(EQSettings.self, forKey: .eq) ?? defaults.eq
+        outputDeviceUID = try container.decodeIfPresent(String.self, forKey: .outputDeviceUID)
+    }
+}
+
 // MARK: - Presets
 
 struct EQPreset: Codable, Identifiable, Hashable {
@@ -124,4 +149,16 @@ struct EQPreset: Codable, Identifiable, Hashable {
         EQPreset(name: "Rock", gains: [5, 4, 3, 1.5, -0.5, -1, 0.5, 2.5, 3.5, 4.5], isBuiltin: true),
         EQPreset(name: "Podcast", gains: [-3, -2, 0, 2, 4, 4, 3, 1, 0, -1], isBuiltin: true),
     ]
+}
+
+extension EQPreset {
+    /// `name` and `gains` stay required: a preset without them is not meaningful.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decode(String.self, forKey: .name)
+        gains = try container.decode([Float].self, forKey: .gains)
+        preampDB = try container.decodeIfPresent(Float.self, forKey: .preampDB) ?? 0
+        isBuiltin = try container.decodeIfPresent(Bool.self, forKey: .isBuiltin) ?? false
+    }
 }

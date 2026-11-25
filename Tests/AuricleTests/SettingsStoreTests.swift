@@ -98,4 +98,39 @@ final class SettingsStoreTests: XCTestCase {
             try roundTrip(preset)
         }
     }
+
+    func testMissingKeysFallBackToDefaults() throws {
+        // A settings file from another version lacks some keys: known values must survive
+        // instead of the whole file decoding to defaults (and being overwritten on save).
+        let json = """
+        {
+          "appConfigs": { "com.zoom": { "isMuted": true } },
+          "customPresets": [ { "name": "Mine", "gains": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] } ]
+        }
+        """
+        let decoded = try JSONDecoder().decode(PersistedState.self, from: Data(json.utf8))
+
+        var expected = AppAudioConfig()
+        expected.isMuted = true
+        XCTAssertEqual(decoded.appConfigs["com.zoom"], expected)
+        XCTAssertEqual(decoded.masterConfig, AppAudioConfig())
+        XCTAssertTrue(decoded.rememberConfigs)
+        XCTAssertEqual(decoded.customPresets.count, 1)
+        XCTAssertEqual(decoded.customPresets.first?.name, "Mine")
+        XCTAssertEqual(decoded.customPresets.first?.preampDB, 0)
+        XCTAssertEqual(decoded.customPresets.first?.isBuiltin, false)
+    }
+
+    func testPartialEQSettingsDecode() throws {
+        let decoded = try JSONDecoder().decode(EQSettings.self, from: Data(#"{"enabled": true}"#.utf8))
+        XCTAssertTrue(decoded.enabled)
+        XCTAssertEqual(decoded.gains, EQSettings().gains)
+        XCTAssertEqual(decoded.preampDB, 0)
+    }
+
+    func testUnknownKeysAreIgnored() throws {
+        let decoded = try JSONDecoder().decode(AppAudioConfig.self,
+                                               from: Data(#"{"volume": 0.5, "balance": -0.2}"#.utf8))
+        XCTAssertEqual(decoded.volume, 0.5)
+    }
 }
