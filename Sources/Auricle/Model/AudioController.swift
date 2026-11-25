@@ -387,7 +387,7 @@ final class AudioController: ObservableObject {
         }
         masterEngine?.discardChainAfterServiceRestart()
         devices.serviceRestarted()
-        processes.refresh()
+        processes.serviceRestarted()
         for engine in engines.values {
             engine.rebuildAfterServiceRestart()
         }

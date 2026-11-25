@@ -21,6 +21,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   retry: the engine is retried when the app relaunches or the audio devices change.
 - A settings file with missing keys (e.g. from another version) no longer resets all
   per-app settings and custom presets; missing values fall back to their defaults.
+- After a coreaudiod restart, an app whose new process object reused a numeric object
+  ID from before the restart never got a fresh "is playing" listener, so starting or
+  stopping playback was not noticed until some unrelated process-list change. All
+  per-process listeners are now dropped and re-registered on restart.
 - Build is warning-free again (`SettingsStore.save` capture).
 
 ## [0.2.1] — 2026-07-08

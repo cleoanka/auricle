@@ -45,6 +45,18 @@ final class AudioProcessMonitor: ObservableObject {
         refresh()
     }
 
+    /// coreaudiod restarted: every process object ID is dead, and the HAL may hand the same
+    /// numeric IDs to new process objects. syncOutputListeners keys by ID, so a reused ID
+    /// would keep its stale token and the new object would never get an IsRunningOutput
+    /// listener. Drop every per-process listener and re-register from the fresh list.
+    func serviceRestarted() {
+        for token in outputTokens.values {
+            token.cancel()
+        }
+        outputTokens.removeAll()
+        refresh()
+    }
+
     func refresh() {
         let objects = (try? AudioObjectID.system.readObjectIDList(kAudioHardwarePropertyProcessObjectList)) ?? []
         syncOutputListeners(objects)
