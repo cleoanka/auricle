@@ -31,6 +31,12 @@ final class AudioController: ObservableObject {
     /// Object-ID set an engine had when it failed: a different set (app relaunched,
     /// helpers changed) is a fresh attempt, so the recorded error does not pin it forever.
     private var failedObjectIDs: [String: [AudioObjectID]] = [:]
+    /// Output-device UIDs as of the last device-list event. Every chain build/teardown
+    /// creates/destroys a private aggregate, which also fires the HAL device-list
+    /// listener; only a change in the (aggregate-filtered) output list retries failed
+    /// engines, so an engine that fails after creating its aggregate cannot re-trigger
+    /// its own retry in a build/fail loop.
+    private var knownOutputUIDs: Set<String> = []
     private var terminateObserver: NSObjectProtocol?
     private var cancellables: Set<AnyCancellable> = []
     private var serviceRestartToken: ListenerToken?
@@ -79,6 +85,7 @@ final class AudioController: ObservableObject {
         }
 
         devices.start()
+        knownOutputUIDs = Set(devices.outputDevices.map(\.uid))
         processes.start()
         reconcileEngines()
         runPermissionProbe()
@@ -371,7 +378,11 @@ final class AudioController: ObservableObject {
             guard let config = appConfigs[key], let uid = config.outputDeviceUID else { continue }
             engine.apply(config: config, targetDeviceUID: uid)
         }
-        retryFailedEnginesAfterDeviceChange()
+        let outputUIDs = Set(devices.outputDevices.map(\.uid))
+        if outputUIDs != knownOutputUIDs {
+            knownOutputUIDs = outputUIDs
+            retryFailedEnginesAfterDeviceChange()
+        }
     }
 
     private func serviceRestarted() {
