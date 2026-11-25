@@ -51,8 +51,6 @@ final class ProcessTapEngine {
     /// indicate missing System Audio Recording consent.
     var onFailure: ((String) -> Void)?
 
-    private(set) var isRunning: Bool = false
-
     private let controlQueue: DispatchQueue
     private let levels: UnsafeMutablePointer<Float>
     private var tappedObjectIDs: [AudioObjectID]
@@ -164,7 +162,6 @@ final class ProcessTapEngine {
             let hadChain = self.chain != nil
             guard self.restartState.discard(hasChain: hadChain) else { return }
             self.chain = nil
-            self.isRunning = false
             self.levels.update(repeating: 0, count: 2)
         }
     }
@@ -233,7 +230,6 @@ final class ProcessTapEngine {
 
     private func reportFailure(_ message: String) {
         engineLog.error("engine failure: \(message, privacy: .public)")
-        isRunning = false
         let generation = buildGeneration.withLock { $0 }
         guard let handler = onFailure else { return }
         DispatchQueue.main.async { [weak self] in
@@ -255,7 +251,6 @@ final class ProcessTapEngine {
     }
 
     private func tearDownChain() {
-        isRunning = false
         guard let chain else { return }
         self.chain = nil
         Self.destroy(chain: chain)
@@ -482,7 +477,6 @@ final class ProcessTapEngine {
                       sampleRate: sampleRate,
                       rtState: rtState,
                       listeners: listeners)
-        isRunning = true
         engineLog.info("chain up: tap \(tapID, privacy: .public), aggregate \(aggregateID, privacy: .public), target \(target.uid, privacy: .public), sr \(sampleRate, privacy: .public)")
     }
 
