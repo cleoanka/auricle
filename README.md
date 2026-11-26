@@ -8,7 +8,7 @@
 
 Per-app volume, EQ, boost, and output routing — a menu bar mixer for macOS.
 
-Auricle sits in your menu bar and gives every app that plays audio its own volume slider, mute button, gain boost, 10-band equalizer, and output device. It is built entirely on public Core Audio process-tap APIs introduced in macOS 14.4, written in Swift and SwiftUI, with no third-party dependencies.
+Auricle sits in your menu bar and gives every app that plays audio its own volume slider, mute button, gain boost, 10-band equalizer, and output device. It is built entirely on public Core Audio process-tap APIs (available since macOS 14.2; Auricle requires 14.4), written in Swift and SwiftUI, with no third-party dependencies.
 
 ## Features
 
@@ -23,7 +23,7 @@ Auricle sits in your menu bar and gives every app that plays audio its own volum
 
 ## Requirements
 
-- macOS **14.4** or later (the per-process tap API does not exist before 14.4).
+- macOS **14.4** or later. The per-process tap API ([`AudioHardwareCreateProcessTap`](https://developer.apple.com/documentation/coreaudio/audiohardwarecreateprocesstap(_:_:))) is available from macOS 14.2; Auricle itself requires 14.4.
 - Apple Silicon or Intel (releases are universal binaries).
 
 ## Install
@@ -85,7 +85,7 @@ flowchart LR
 ## Limitations
 
 - **Ad-hoc signed, not notarized.** Every download hits Gatekeeper (see Install). TCC permission grants are keyed to the code signature, so updating to a new build may re-prompt for System Audio Recording.
-- **macOS 14.4+ only** — process taps simply don't exist earlier.
+- **macOS 14.4+ only** — Core Audio process taps exist from macOS 14.2, but Auricle's minimum is 14.4.
 - **Per-app audio bypasses the master chain by design.** An app with its own tap is routed directly (with its own boost/EQ) and excluded from the system-wide tap; the master Boost/EQ applies only to un-managed audio. This avoids double processing and feedback, but means master EQ does not stack on top of per-app EQ.
 - Launch-at-login with an ad-hoc signature is best-effort; if the toggle fails, move Auricle to `/Applications` and try again.
 
