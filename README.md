@@ -8,7 +8,7 @@
 
 Per-app volume, EQ, boost, and output routing — a menu bar mixer for macOS.
 
-Auricle sits in your menu bar and gives every app that plays audio its own volume slider, mute button, gain boost, 10-band equalizer, and output device. It is built entirely on public Core Audio process-tap APIs (available since macOS 14.2; Auricle requires 14.4), written in Swift and SwiftUI, with no third-party dependencies.
+Auricle sits in your menu bar and gives every app that plays audio its own volume slider, mute button, gain boost, 10-band equalizer, and output device. It is built on public Core Audio process-tap APIs (available since macOS 14.2; Auricle requires 14.4), plus one private lookup that maps helper processes to the app they belong to, written in Swift and SwiftUI, with no third-party dependencies.
 
 ## Features
 
